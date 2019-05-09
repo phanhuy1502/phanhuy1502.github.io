@@ -34,7 +34,7 @@ done
 Run the script on a terminal:
 
 ```sh
-sh ids.sh
+sh stream.sh
 ```
 
 The content of the file `ids.txt` now is a stream. And we can view the new records (in this case, a line with a single number) on another terminal:
@@ -135,7 +135,7 @@ In the example above, we construct a simple stream with a processing unit to con
 
 - More complicated processing requirements such as aggregation. For instance, counting number of clicks by item ID in every minute in our example. This requires more complicated processing unit in which we need to keep a `state` (a count of each item ID) and a time window checking (to know when is the start and end of a minute)
 
-- Huge data volumes, which can't be processed on a single machine. This will requires us to design a distributed system. Distributed system, in turn, will introduces the problem of out-of-order and duplicated messages.
+- Huge data volumes, which can't be processed on a single machine. This will requires us to design a distributed system. Distributed system, in turn, will introduce the problem of out-of-order and duplicated messages.
 
 - Storage system: how to we effectively store the streams?
 
