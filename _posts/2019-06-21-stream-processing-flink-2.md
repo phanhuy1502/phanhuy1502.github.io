@@ -8,137 +8,150 @@ comments: true
 #gh-badge: [star, fork, follow]
 ---
 
-(Part 1)({% post_url 2019-07-21-name-of-post %})
+Other posts in the series:
 
-## What is a stream?
+- [Part 1]({% post_url 2019-05-10-stream-processing-flink %})
 
-Think of data stream as continuous, immutable flow of sequential data record. Three properties of data stream, from my observation, are continuous, sequential and immutable.
+In this part, we will redo the example in part 1 using Kafka as our message queue and Flink as our stream processing framework.
+While part 1 focuses more on concepts, part 2 will introduce some popular frameworks for stream data processing (Kafka / Flink), which helps to handle common issues in data engineering, so developers can focus on the actual processing logic.
 
-Your Facebook feed is a data stream, with posts coming continunously. The posts are sequential, meaning they have a time order and new posts are appended to the end of the feed (top of your screen). The posts are also immutable in a sense that post won't be updated once they are in the stream. (Strictly speaking, Facebook post can be edited, and can be moved up/down in the feed, but let's assume that they aren't so we can have a simple example of data stream.)
+Notice that the tutorial here runs everything on a single machine, which is not a proper setup for a production environment
+(where you almost always want to run your data pipelines on a cluster of machines).
+The focus here is on introducing Kafka and Flink and how they fit in to the example in part 1 (of a data pipeline without any fancy technology).
 
-Another example of stream is your application log. Think of each log line as a record in the stream. The log is flow of lines comming continuously in sequential order, each line is immutable (log won't be changed once they have been written to the file system).
+The tutorial is tested on Debian GNU/Linux 9.9.
+Ability to read Java code will be useful to follow this part.
 
-## Create a (trivial) stream
+## Installation
 
-Let's create a stream which writes a random number (from 1 to 5) together with a timestamp to the end of a file (`ids.txt`) every 500 miliseconds. Create a new file named `stream.sh` with the following content:
+(If you're just reading this tutorial without doing hands-on, skip the scripts in this part.
+There are some brief introduction of the technology we're using so it's still worth reading the Installation part even if you're not doing hands-on)
 
-> Scripts are tested in MacOS Mojave 10.14.4, it should also work on a Linux distribution. Send me a message if the script fails on your machine.
+We'll run all our dependencies as Docker containers.
 
-```bash
-#!/bin/bash
-while true 
-do
-    echo $(date +"%s") " " $((1 + RANDOM % 5)) >> ids.txt
-    sleep 0.5
-done
-```
+### (1) Install Docker & Docker Compose
 
-Run the script on a terminal:
+Docker is a container technology. You can think of container as a packaging tool for the applications, so the applications can be delivered/deployed/installed as a package/container.
+(like how you install software on Linux with tools like `yum` or `apt-get`).
+Docker offers more than that, but in this tutorial, we'll use Docker mostly as a tool for installing our softwares (like Kafka / Zookeeper).
 
-```sh
-sh stream.sh
-```
+Find the installation guide for your system [here](https://docs.docker.com/install/overview/)
 
-The content of the file `ids.txt` now is a stream. And we can view the new records (in this case, a line with a single number) on another terminal:
+For debian based linux:
 
 ```sh
-tail -f ids.txt
+# extracted from: https://docs.docker.com/install/linux/docker-ce/debian/
+
+# install packages for apt to add private repo
+sudo apt-get update
+
+sudo apt-get install \
+    apt-transport-https \
+    ca-certificates \
+    curl \
+    gnupg2 \
+    software-properties-common
+
+# add docker repo
+curl -fsSL https://download.docker.com/linux/debian/gpg | sudo apt-key add -
+
+sudo add-apt-repository \
+   "deb [arch=amd64] https://download.docker.com/linux/debian \
+   $(lsb_release -cs) \
+   stable"
+
+# install docker-ce
+sudo apt-get update
+sudo apt-get install docker-ce docker-ce-cli containerd.io
 ```
 
-You should observe a new number printing out every 0.5 second, like 
+Verify the installation
 
-```
-1557394952   1
-1557394952   4
-1557394953   3
-1557394953   2
+```sh
+docker version
+
+>>>
+...
+ Version:           18.09.7
 ...
 ```
 
-This is a trivial example of a data stream. The random number can be replaced with a log line, a content of a Facebook post or a changes in database. The storage here is a file system, which can be replaced with a message queue like RabbitMQ or Kafka. The data volume can be a lot larger than just 2 messages/second. Here, the lines/messages come in time order, in other cases, messages might come out-of-order (a line with a later timestamp comes before a line in a previous timestamp).
+### (2) Start Zookeeper
 
-## Process a stream
+Kafka & Flink uses Zookeeper for distributed coordination.
+In this post, all installations are in a single machine, so the roles of Zookeeper is not clear.
+But when we deploy Kafka/Flink on a cluster (= multiple machines), the role of Zookeeper will be clearer, helping the different nodes in the cluster to communicate.
 
-Image we have a website selling clothes, and the stream in our previous example are the IDs of the items which user clicks on (our shop has 5 items, so the item ID ranges from 1 to 5). We want to convert the stream of item IDs to a stream of item names, and write it to another stream. The conversion from item IDs to item names is done by a process unit:
+Start a Zookeeper server as a Docker container on your local env.
+We are using this [official Zookeeper image by Apache](https://hub.docker.com/_/zookeeper)
 
+```bash
+# this command start the zookeeper as a docker container
+# --name zk: specify the name of the zookeeper container to be zk
+# -p 2181:2181: map the container port 2181 to the host port 2181. This allows the zookeeper service to be accessible from localhost:2181
+# zookeeper: is the Docker image name. This Docker image name is fetched from the docker hub to your local env
+docker run --name zk -d -p 2181:2181 zookeeper
 ```
+
+### (3) Start Kafka
+
+Kafka is used as a asynchronous message queue.
+Producer can write messages to Kafka to different topics (queues), while multiple consumer can read these messages in order from Kafka.
+
+Recall our data pipeline from (Part 1)({% post_url 2019-05-10-stream-processing-flink %}).
+The Kafka replaces the role of the text files (stream 1/ stream 2) in the pipeline.
+
+```txt
  _____________     __________     ______________     __________
 |  stream.sh  |-> |  ids.txt |-> |  process.sh  |-> |names.txt |
 |(data source)|   |(stream 1)|   |(process unit)|   |(stream 2)|
  -------------     ----------     --------------     ----------
 ```
 
-The content of names.txt should look like
-
-```
-1557394952   jeans
-1557394952   t-shirt
-1557394953   shorts
-1557394953   skirt
-...
-```
-
-Let's create our processing unit, create a file named `process.sh` with the content:
+We'll use the [Kafka image provided by Spotify](https://hub.docker.com/r/spotify/kafka).
+Again, it's a minimal setting with a single Kafka server with all the default settings.
 
 ```bash
-#!/bin/bash
-while read line
-do
-    # parse message
-    timestamp=$(echo $line | cut -d' ' -f1)
-    id=$(echo $line | cut -d' ' -f2)
-
-    # map id to name
-    case $id in
-        "1") name="jeans"
-        ;;
-        "2") name="skirt"
-        ;;
-        "3") name="short"
-        ;;
-        "4") name="t-shirt"
-        ;;
-        "5") name="hoodie"
-        ;;
-    esac
-
-    # output
-    echo $timestamp " " $name >> names.txt
-done
+docker run -p 2181:2181 -p 9092:9092 -d --name kafka spotify/kafka
 ```
 
-The script reads from the stdin, maps the IDs to names and appends the processed message to another stream (in this case, appending to the file `names.txt`).
+### Start Flink
 
-While running the `stream.sh`, run the `process.sh` on another terminal window:
+[Flink](https://ci.apache.org/projects/flink/flink-docs-master/) is a platform for streaming data processing.
+Flink helps to manage and run our data processing unit.
+In the diagram above, Flink plays the role of the process unit.
 
-```sh
-tail -f ids.txt | sh process.sh
+We'll use the [official Flink image for deployment](https://hub.docker.com/_/flink).
+Again, we deploy with a standalone (single machine) minimal configuration.
+
+A super brief intro to Flink's architecture:
+Flink's architecture is a typical master-slave architecture in distributed system.
+Master-slave architecture includes several (usually 3-5) master nodes and lots of slave node.
+Slave node (also known as worker node or executor node) execute the actual processing work (like process data, run server).
+Master node (also known by other names like: cordinator node or scheduler node) helps to coordinate the worker.
+A Flink cluster include `job managers` and `task managers`.
+Job managers are the master nodes, manage and cooridate the task managers - the slave nodes which run your data pipelines.
+
+Start a single job manager and a single task manager as two Docker containers
+
+```bash
+
+# create a docker "network" named flink, for different containers to communicate
+docker network create --driver bridge flink
+
+docker run -d \
+    --name flink_jobmanager \
+    --network flink \
+    --expose 6123 \
+    -p 8081:8081 \
+    -e JOB_MANAGER_RPC_ADDRESS=flink_jobmanager \
+    flink:1.9.1 jobmanager
+
+docker run --name flink_taskmanager \
+    --network flink \
+    --expose 6121 --expose 6122 \
+    -e JOB_MANAGER_RPC_ADDRESS=flink_jobmanager \
+    -d flink:1.9.1 taskmanager
+
+docker run -it amouat/network-utils bash
 ```
-
-And we can see the processed stream by:
-
-```sh
-tail -f names.sh
-```
-
-The output should look like:
-
-```
-1557394952   jeans
-1557394952   t-shirt
-1557394953   shorts
-1557394953   skirt
-...
-```
-
-## Conclusion
-
-In the example above, we construct a simple stream with a processing unit to convert it into another stream. The processing unit does a simple 1-to-1 mapping. In reality, there are many concerns while dealing with stream processing, such as:
-
-- More complicated processing requirements such as aggregation. For instance, counting number of clicks by item ID in every minute in our example. This requires more complicated processing unit in which we need to keep a `state` (a count of each item ID) and a time window checking (to know when is the start and end of a minute)
-
-- Huge data volumes, which can't be processed on a single machine. This will requires us to design a distributed system. Distributed system, in turn, will introduce the problem of out-of-order and duplicated messages.
-
-- Storage system: how to we effectively store the streams?
-
-The next post will cover an example with `Kafka` and `Flink`, which aims to address those issues.
